@@ -142,6 +142,7 @@ private final class LocalProcessTerminalViewProcessAdapter:
     private let frameSignal: FrameDriverSignal
     private let diagnosticsState: Locked<TerminalView.Diagnostics>
     private let outputHandler: LockedVoidCallback
+    private let dataHandler: Locked<(@Sendable (ArraySlice<UInt8>) -> Void)?>
     private let windowSize = Locked(winsize())
     private let inputProcess = Locked(WeakLocalProcessInputReference())
     private let failureHandler: @MainActor @Sendable (LocalProcessError) -> Void
@@ -151,12 +152,14 @@ private final class LocalProcessTerminalViewProcessAdapter:
          frameSignal: FrameDriverSignal,
          diagnosticsState: Locked<TerminalView.Diagnostics>,
          outputHandler: LockedVoidCallback,
+         dataHandler: Locked<(@Sendable (ArraySlice<UInt8>) -> Void)?>,
          failureHandler: @escaping @MainActor @Sendable (LocalProcessError) -> Void,
          terminationHandler: @escaping @MainActor @Sendable (Int32?) -> Void) {
         self.renderOwner = renderOwner
         self.frameSignal = frameSignal
         self.diagnosticsState = diagnosticsState
         self.outputHandler = outputHandler
+        self.dataHandler = dataHandler
         self.failureHandler = failureHandler
         self.terminationHandler = terminationHandler
     }
@@ -196,6 +199,7 @@ private final class LocalProcessTerminalViewProcessAdapter:
             diagnostics.bytesFed += slice.count
             diagnostics.batches += 1
         }
+        if let tap = dataHandler.withLock({ $0 }) { tap(slice) }
         outputHandler.call()
         frameSignal.markDirty()
     }
@@ -208,6 +212,11 @@ private final class LocalProcessTerminalViewProcessAdapter:
         diagnosticsState.withLock { diagnostics in
             diagnostics.bytesFed += bytes.count
             diagnostics.batches += 1
+        }
+        if let tap = dataHandler.withLock({ $0 }) {
+            var copy = [UInt8](repeating: 0, count: bytes.count)
+            for i in 0..<bytes.count { copy[i] = bytes[i] }
+            tap(copy[...])
         }
         outputHandler.call()
         frameSignal.markDirty()
@@ -247,6 +256,7 @@ open class LocalProcessTerminalView: TerminalView, TerminalViewDelegate {
     public internal(set) var process: LocalProcess!
     private var processAdapter: LocalProcessTerminalViewProcessAdapter!
     nonisolated private let processOutputHandler = LockedVoidCallback()
+    nonisolated private let processDataHandler = Locked<(@Sendable (ArraySlice<UInt8>) -> Void)?>(nil)
 
     public override init (frame: CGRect)
     {
@@ -275,6 +285,7 @@ open class LocalProcessTerminalView: TerminalView, TerminalViewDelegate {
             frameSignal: frameSignal,
             diagnosticsState: diagnosticsState,
             outputHandler: processOutputHandler,
+            dataHandler: processDataHandler,
             failureHandler: { [weak self] error in
                 guard let self, let process = self.process else { return }
                 self.processFailedToStart(process, error: error)
@@ -304,6 +315,14 @@ open class LocalProcessTerminalView: TerminalView, TerminalViewDelegate {
         processOutputHandler.replace(with: handler)
     }
     
+    /// Installs a tap that receives the raw bytes of every process output batch
+    /// on the process parse thread, after they are fed to the terminal and
+    /// before the output handler runs. The slice is only valid during the call
+    /// (copy it to keep it); the handler must return quickly.
+    public func setProcessDataHandler(_ handler: (@Sendable (ArraySlice<UInt8>) -> Void)?) {
+        processDataHandler.withLock { $0 = handler }
+    }
+
     /**
      * The `processDelegate` is used to deliver messages and information relevant to
      * the process and the host: window size, title, the current directory, process
