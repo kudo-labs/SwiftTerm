@@ -263,6 +263,9 @@ private final class TerminalIOPipelineWorker: @unchecked Sendable {
             ProfilingOwner.markCurrentThread(as: .parse)
             runAsWorker(parseMain)
         }
+        // The parse thread runs the terminal parser plus host callbacks (output
+        // and data taps); give it headroom over the 512 KB secondary-thread default.
+        parseThread.stackSize = 1 << 20
         gatherThread.name = "swiftterm-io-gather"
         parseThread.name = ProfilingOwner.parseThreadName
 #if canImport(Darwin)

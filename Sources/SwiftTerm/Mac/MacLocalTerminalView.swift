@@ -142,7 +142,7 @@ private final class LocalProcessTerminalViewProcessAdapter:
     private let frameSignal: FrameDriverSignal
     private let diagnosticsState: Locked<TerminalView.Diagnostics>
     private let outputHandler: LockedVoidCallback
-    private let dataHandler: Locked<(@Sendable (ArraySlice<UInt8>) -> Void)?>
+    private let dataHandler: LockedDataCallback
     private let windowSize = Locked(winsize())
     private let inputProcess = Locked(WeakLocalProcessInputReference())
     private let failureHandler: @MainActor @Sendable (LocalProcessError) -> Void
@@ -152,7 +152,7 @@ private final class LocalProcessTerminalViewProcessAdapter:
          frameSignal: FrameDriverSignal,
          diagnosticsState: Locked<TerminalView.Diagnostics>,
          outputHandler: LockedVoidCallback,
-         dataHandler: Locked<(@Sendable (ArraySlice<UInt8>) -> Void)?>,
+         dataHandler: LockedDataCallback,
          failureHandler: @escaping @MainActor @Sendable (LocalProcessError) -> Void,
          terminationHandler: @escaping @MainActor @Sendable (Int32?) -> Void) {
         self.renderOwner = renderOwner
@@ -199,7 +199,7 @@ private final class LocalProcessTerminalViewProcessAdapter:
             diagnostics.bytesFed += slice.count
             diagnostics.batches += 1
         }
-        if let tap = dataHandler.withLock({ $0 }) { tap(slice) }
+        dataHandler.call(slice)
         outputHandler.call()
         frameSignal.markDirty()
     }
@@ -213,10 +213,10 @@ private final class LocalProcessTerminalViewProcessAdapter:
             diagnostics.bytesFed += bytes.count
             diagnostics.batches += 1
         }
-        if let tap = dataHandler.withLock({ $0 }) {
+        if dataHandler.isSet {
             var copy = [UInt8](repeating: 0, count: bytes.count)
             for i in 0..<bytes.count { copy[i] = bytes[i] }
-            tap(copy[...])
+            dataHandler.call(copy[...])
         }
         outputHandler.call()
         frameSignal.markDirty()
@@ -256,7 +256,7 @@ open class LocalProcessTerminalView: TerminalView, TerminalViewDelegate {
     public internal(set) var process: LocalProcess!
     private var processAdapter: LocalProcessTerminalViewProcessAdapter!
     nonisolated private let processOutputHandler = LockedVoidCallback()
-    nonisolated private let processDataHandler = Locked<(@Sendable (ArraySlice<UInt8>) -> Void)?>(nil)
+    nonisolated private let processDataHandler = LockedDataCallback()
 
     public override init (frame: CGRect)
     {
@@ -320,7 +320,7 @@ open class LocalProcessTerminalView: TerminalView, TerminalViewDelegate {
     /// before the output handler runs. The slice is only valid during the call
     /// (copy it to keep it); the handler must return quickly.
     public func setProcessDataHandler(_ handler: (@Sendable (ArraySlice<UInt8>) -> Void)?) {
-        processDataHandler.withLock { $0 = handler }
+        processDataHandler.replace(with: handler)
     }
 
     /**
